@@ -10,7 +10,7 @@ app = FastAPI()
 # Proxy HTTP requests
 @app.middleware("http")
 async def reverse_proxy(request: Request, call_next):
-    print("Reverse proxy up..")
+    print("Reverse proxy up..") 
     hostname = request.url.hostname
     subdomain = hostname.split(".")[0]
 
@@ -19,8 +19,8 @@ async def reverse_proxy(request: Request, call_next):
         return Response("Not Found", status_code=404)
 
     # Retrieve target IP and port
-    # print("IP ADDRESS: ",db[subdomain]["ip_address"])  logging
-    # print("PORT NUMBER: ",db[subdomain]["default_port"])
+    # print("IP ADDRESS: ",db[subdomain]["ip_address"])  #logging
+    print("PORT NUMBER: ",db[subdomain]["default_port"])
     ip_address = db[subdomain]["ip_address"]
     default_port = db[subdomain]["default_port"]
     target_url = f"http://{ip_address}:{default_port}"

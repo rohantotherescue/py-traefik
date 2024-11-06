@@ -5,7 +5,7 @@ services:
     build: 
       context: .
       dockerfile: Dockerfile.dev
-    command: /bin/sh -c "python docker_events.py && python main.py && python reverse_proxy.py"
+    command: python main.py #/bin/sh -c "python docker_events.py && python main.py && python reverse_proxy.py"
     ports:
       - "8080:8080"
       - "80:80"
