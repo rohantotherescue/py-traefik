@@ -9,6 +9,9 @@ import uvicorn
 from docker_events import db, listen_to_docker_events
 
 client = docker.from_env()
+
+timeout = httpx.Timeout(10.0, connect=10.0, read=10.0)
+
 # db = {}
 
 # def listen_to_docker_events():
@@ -53,13 +56,12 @@ async def reverse_proxy(request: Request, call_next):
     default_port = db[subdomain]["default_port"]
     target_url = f"http://{ip_address}:{default_port}"
 
-    async with httpx.AsyncClient() as client:
-        proxied_request = client.build_request(
-            request.method, target_url + request.url.path, headers=dict(request.headers), data=await request.body()
-        )
-        response = await client.send(proxied_request, follow_redirects=True)
-
-    return Response(content=response.content, status_code=response.status_code, headers=dict(response.headers))
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.stream("GET", target_url, headers=dict(request.headers)) as response:
+            content = b""
+            async for chunk in response.aiter_bytes():
+                content += chunk
+            return Response(content, status_code=response.status_code, headers=dict(response.headers))
 
 @app.websocket_route("/{path:path}")
 async def websocket_proxy(websocket: WebSocket, path: str):
@@ -74,8 +76,8 @@ async def websocket_proxy(websocket: WebSocket, path: str):
     default_port = db[subdomain]["default_port"]
     target_url = f"ws://{ip_address}:{default_port}/{path}"
 
-    async with httpx.AsyncClient() as client:
-        async with client.websocket_connect(target_url) as target_ws:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.websocket_connect(target_url, timeout=timeout, max_size=10**7) as target_ws:
             await websocket.accept()
 
             async def forward_to_client():
