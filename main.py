@@ -6,6 +6,7 @@ import asyncio
 import uvicorn
 from pydantic import BaseModel
 from typing import Optional
+import websockets
 
 # Docker client setup
 client = docker.from_env()
@@ -56,7 +57,7 @@ async def reverse_proxy(request: Request, call_next):
 
     ip_address = db[subdomain]["ip_address"]
     default_port = db[subdomain]["default_port"]
-    target_url = f"http://{ip_address}:{default_port}{request.url.path}"
+    target_url = f"http://{ip_address}:{default_port}{request.url.path}{'?' + request.url.query if request.url.query else ''}"
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
@@ -87,7 +88,7 @@ async def reverse_proxy(request: Request, call_next):
 
 # WebSocket proxy route
 @app.websocket_route("/{path:path}")
-async def websocket_proxy(websocket: WebSocket, path: str):
+async def websocket_proxy(websocket: WebSocket, path: str = ""):
     hostname = websocket.url.hostname
     subdomain = hostname.split(".")[0]
 
@@ -97,25 +98,30 @@ async def websocket_proxy(websocket: WebSocket, path: str):
 
     ip_address = db[subdomain]["ip_address"]
     default_port = db[subdomain]["default_port"]
-    target_url = f"ws://{ip_address}:{default_port}/{path}"
+    target_url = f"ws://{ip_address}:{default_port}/{path}?{websocket.url.query}"
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        try:
-            async with client.websocket_connect(target_url) as target_ws:
-                await websocket.accept()
+    try:
+        # Connect to the target WebSocket server
+        async with websockets.connect(target_url) as target_ws:
+            await websocket.accept()
 
-                async def forward_to_client():
-                    async for message in target_ws.iter_text():
+            async def forward_to_client():
+                async for message in target_ws:
+                    if isinstance(message, bytes):
+                        await websocket.send_bytes(message)
+                    elif isinstance(message, str):
                         await websocket.send_text(message)
 
-                async def forward_to_target():
-                    async for message in websocket.iter_text():
-                        await target_ws.send_text(message)
+            async def forward_to_target():
+                async for message in websocket.iter_text():
+                    await target_ws.send(message)
 
-                await asyncio.gather(forward_to_client(), forward_to_target())
-        except httpx.RequestError as e:
-            print("WebSocket connection failed:", e)
-            await websocket.close(code=500)
+            await asyncio.gather(forward_to_client(), forward_to_target())
+
+    except Exception as e:
+        print("WebSocket connection failed:", e)
+        await websocket.close(code=500)
+
 
 # Management API for container handling
 managementAPI = FastAPI()
