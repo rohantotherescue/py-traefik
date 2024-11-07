@@ -18,6 +18,7 @@ def listen_to_docker_events():
                 ip_address = container_info["NetworkSettings"]["IPAddress"]
                 exposed_ports = container_info["Config"].get("ExposedPorts", {})
 
+                # Find a default port if available
                 default_port = None
                 if exposed_ports:
                     for port in exposed_ports.keys():
@@ -25,8 +26,9 @@ def listen_to_docker_events():
                             default_port = port.split("/")[0]
                             break
 
-                print(f"Registering {container_name}.localhost --> http://{ip_address}:{default_port}")
-                db[container_name] = {"container_name": container_name, "ip_address": ip_address, "default_port": default_port}
+                if default_port:
+                    print(f"Registering {container_name}.localhost --> http://{ip_address}:{default_port}")
+                    db[container_name] = {"container_name": container_name, "ip_address": ip_address, "default_port": default_port}
 
     except Exception as e:
         print("Error in getting events:", e)

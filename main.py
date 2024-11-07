@@ -1,47 +1,18 @@
+import asyncio
+import ssl
 import docker
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from starlette.responses import Response
 import httpx
-import asyncio
 import uvicorn
 from pydantic import BaseModel
 from typing import Optional
 import websockets
+from docker_events import db, listen_to_docker_events
 
 # Docker client setup
 client = docker.from_env()
-timeout = httpx.Timeout(10.0, connect=10.0, read=10.0)
-db = {}
-
-# Listening to Docker events
-def listen_to_docker_events():
-    try:
-        print("Listening to Docker events...")
-        event_stream = client.events(decode=True)
-        for event in event_stream:
-            if event.get("Type") == "container" and event.get("Action") == "start":
-                container_id = event["id"]
-                container = client.containers.get(container_id)
-                container_info = container.attrs
-
-                container_name = container_info["Name"].lstrip("/")
-                ip_address = container_info["NetworkSettings"]["IPAddress"]
-                exposed_ports = container_info["Config"].get("ExposedPorts", {})
-
-                # Find a default port if available
-                default_port = None
-                if exposed_ports:
-                    for port in exposed_ports.keys():
-                        if port.endswith("/tcp"):
-                            default_port = port.split("/")[0]
-                            break
-
-                if default_port:
-                    print(f"Registering {container_name}.localhost --> http://{ip_address}:{default_port}")
-                    db[container_name] = {"container_name": container_name, "ip_address": ip_address, "default_port": default_port}
-
-    except Exception as e:
-        print("Error in getting events:", e)
+timeout = httpx.Timeout(10.0, connect=10.0, read=20.0)
 
 # FastAPI app for proxying requests
 app = FastAPI()
@@ -86,41 +57,46 @@ async def reverse_proxy(request: Request, call_next):
             print(f"General request error: {e}")
             return Response("An error occurred while processing the request", status_code=500)
 
-# WebSocket proxy route
-@app.websocket_route("/{path:path}")
-async def websocket_proxy(websocket: WebSocket, path: str = ""):
+@app.websocket("/{path:path}")
+async def websocket_proxy(websocket: WebSocket, path: str):
+    await websocket.accept()
     hostname = websocket.url.hostname
     subdomain = hostname.split(".")[0]
 
     if subdomain not in db:
-        await websocket.close(code=404)
+        await websocket.close(code=1000)
         return
 
     ip_address = db[subdomain]["ip_address"]
     default_port = db[subdomain]["default_port"]
-    target_url = f"ws://{ip_address}:{default_port}/{path}?{websocket.url.query}"
+    target_url = f"ws://{ip_address}:{default_port}/{path}"
+
+    # Collect headers from the original WebSocket request
+    headers = {key: value for key, value in websocket.headers.items()}
 
     try:
-        # Connect to the target WebSocket server
-        async with websockets.connect(target_url) as target_ws:
-            await websocket.accept()
+        async with websockets.connect(target_url, extra_headers=headers) as target_ws:
+            async def forward(ws_from, ws_to):
+                try:
+                    async for message in ws_from:
+                        if isinstance(message, bytes):
+                            await ws_to.send_bytes(message)
+                        else:
+                            await ws_to.send_text(message)
+                except WebSocketDisconnect:
+                    pass
 
-            async def forward_to_client():
-                async for message in target_ws:
-                    if isinstance(message, bytes):
-                        await websocket.send_bytes(message)
-                    elif isinstance(message, str):
-                        await websocket.send_text(message)
-
-            async def forward_to_target():
-                async for message in websocket.iter_text():
-                    await target_ws.send(message)
-
-            await asyncio.gather(forward_to_client(), forward_to_target())
-
+            await asyncio.gather(
+                forward(websocket, target_ws),
+                forward(target_ws, websocket)
+            )
+    except websockets.InvalidStatusCode as e:
+        print(f"Invalid status code: {e.status_code}")
+        await websocket.close(code=1000)
     except Exception as e:
-        print("WebSocket connection failed:", e)
-        await websocket.close(code=500)
+        print(f"Error during WebSocket proxying: {e}")
+        await websocket.close(code=1000)
+
 
 
 # Management API for container handling
