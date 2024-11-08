@@ -127,7 +127,7 @@ async def create_container(request: ContainerRequest):
     container = client.containers.create(
         image=image_tag,
         tty=False,
-        host_config={'AutoRemove': True}
+        auto_remove= True
     )
     container.start()
 
