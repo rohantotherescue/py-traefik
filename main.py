@@ -60,6 +60,7 @@ async def reverse_proxy(request: Request, call_next):
 @app.websocket("/{path:path}")
 async def websocket_proxy(websocket: WebSocket, path: str):
     await websocket.accept()
+    
     hostname = websocket.url.hostname
     subdomain = hostname.split(".")[0]
 
@@ -71,18 +72,12 @@ async def websocket_proxy(websocket: WebSocket, path: str):
     default_port = db[subdomain]["default_port"]
     target_url = f"ws://{ip_address}:{default_port}/{path}"
 
-    # Collect headers from the original WebSocket request
-    headers = {key: value for key, value in websocket.headers.items()}
-
     try:
-        async with websockets.connect(target_url, extra_headers=headers) as target_ws:
+        async with websockets.connect(target_url) as target_ws:
             async def forward(ws_from, ws_to):
                 try:
                     async for message in ws_from:
-                        if isinstance(message, bytes):
-                            await ws_to.send_bytes(message)
-                        else:
-                            await ws_to.send_text(message)
+                        await ws_to.send(message)
                 except WebSocketDisconnect:
                     pass
 
@@ -90,12 +85,9 @@ async def websocket_proxy(websocket: WebSocket, path: str):
                 forward(websocket, target_ws),
                 forward(target_ws, websocket)
             )
-    except websockets.InvalidStatusCode as e:
-        print(f"Invalid status code: {e.status_code}")
-        await websocket.close(code=1000)
     except Exception as e:
-        print(f"Error during WebSocket proxying: {e}")
-        await websocket.close(code=1000)
+        print(f"Error occurred: {e}")
+        await websocket.close()
 
 
 
